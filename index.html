@@ -3,7 +3,10 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>名刺OCR読み取り（日本語対応・高精度）</title>
+  <title>名刺OCR + OpenCV処理</title>
+  <!-- OpenCV.js CDN -->
+  <script async src="https://docs.opencv.org/4.x/opencv.js" onload="onOpenCvReady();"></script>
+  <!-- Tesseract.js -->
   <script src="https://cdn.jsdelivr.net/npm/tesseract.js@4/dist/tesseract.min.js"></script>
   <style>
     body { font-family: sans-serif; padding: 1em; }
@@ -14,7 +17,7 @@
 </head>
 <body>
 
-  <h2>📷 名刺をスマホで読み取り（日本語対応・高精度OCR）</h2>
+  <h2>📷 名刺OCR + OpenCV画像処理</h2>
   <video id="video" autoplay playsinline muted></video><br>
   <button onclick="captureAndRecognize()">名刺を撮影して認識</button><br>
   <canvas id="canvas" style="display:none;"></canvas>
@@ -22,12 +25,18 @@
   <div id="output">認識結果がここに表示されます</div>
 
   <script>
+    let cvReady = false;
+
+    function onOpenCvReady() {
+      cvReady = true;
+      console.log("OpenCV.js is ready.");
+    }
+
     const video = document.getElementById("video");
     const canvas = document.getElementById("canvas");
     const preview = document.getElementById("preview");
     const output = document.getElementById("output");
 
-    // カメラ起動（スマホ背面優先）
     async function initCamera() {
       try {
         const stream = await navigator.mediaDevices.getUserMedia({
@@ -44,23 +53,15 @@
       }
     }
 
-    // コントラスト強調（バイナリ化）
-    function enhanceImage(ctx, width, height) {
-      const imageData = ctx.getImageData(0, 0, width, height);
-      const data = imageData.data;
-
-      for (let i = 0; i < data.length; i += 4) {
-        const avg = (data[i] + data[i + 1] + data[i + 2]) / 3;
-        const value = avg > 180 ? 255 : 0; // 閾値180で2値化
-        data[i] = data[i + 1] = data[i + 2] = value;
-      }
-
-      ctx.putImageData(imageData, 0, 0);
-    }
-
-    initCamera(); // 起動時に実行
+    initCamera();
 
     async function captureAndRecognize() {
+      if (!cvReady) {
+        output.textContent = "OpenCV.js の読み込みが完了していません...";
+        return;
+      }
+
+      // canvas に描画
       const ctx = canvas.getContext("2d");
       const targetWidth = 1280;
       const targetHeight = 720;
@@ -68,39 +69,43 @@
       canvas.height = targetHeight;
       ctx.drawImage(video, 0, 0, targetWidth, targetHeight);
 
-      // 前処理（2値化）
-      enhanceImage(ctx, targetWidth, targetHeight);
+      // OpenCVで画像処理
+      const src = cv.imread(canvas);
+      const dst = new cv.Mat();
+      const gray = new cv.Mat();
+      const blurred = new cv.Mat();
+      const edged = new cv.Mat();
 
+      // グレースケール化
+      cv.cvtColor(src, gray, cv.COLOR_RGBA2GRAY, 0);
+      // ノイズ除去
+      cv.GaussianBlur(gray, blurred, new cv.Size(5, 5), 0, 0, cv.BORDER_DEFAULT);
+      // エッジ検出
+      cv.Canny(blurred, edged, 75, 200);
+
+      // 検出した画像を canvas に描画（確認用）
+      cv.imshow(canvas, edged);
+
+      // Data URL に変換してプレビュー表示
       const imageDataURL = canvas.toDataURL("image/png");
       preview.src = imageDataURL;
 
-      output.textContent = "OCR処理中...（高精度日本語モード）";
+      output.textContent = "OCR処理中...（OpenCV処理済）";
 
       const { data: { text } } = await Tesseract.recognize(
         imageDataURL,
-        'jpn', // 日本語のみ
+        'jpn',
         {
           logger: m => console.log(m),
-          langPath: 'https://tessdata.projectnaptha.com/4.0.0_best/' // 日本語辞書URL
+          langPath: 'https://tessdata.projectnaptha.com/4.0.0_best/'
         }
       );
 
+      // メモリ開放
+      src.delete(); dst.delete(); gray.delete(); blurred.delete(); edged.delete();
+
+      // 結果表示
       output.textContent = "抽出テキスト:\n" + text;
-
-      // 情報抽出
-      const emailMatch = text.match(/[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-z]{2,}/);
-      const phoneMatch = text.match(/(\+?\d{1,3}[-.\s]?)?(\(?\d{2,4}\)?[-.\s]?)?\d{2,4}[-.\s]?\d{4}/);
-
-      const lines = text.split('\n').map(line => line.trim()).filter(line => line.length > 0);
-      const nameCandidate = lines.find(line =>
-        /^[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}]{2,8}( [\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}]{2,8})?$/.test(line) ||
-        /^[A-Z][a-z]+ [A-Z][a-z]+$/.test(line)
-      );
-
-      output.textContent += "\n\n🔍 抽出情報:\n";
-      output.textContent += "🧑‍💼 氏名: " + (nameCandidate || "見つかりません") + "\n";
-      output.textContent += "📧 メール: " + (emailMatch ? emailMatch[0] : "見つかりません") + "\n";
-      output.textContent += "📞 電話: " + (phoneMatch ? phoneMatch[0] : "見つかりません");
     }
   </script>
 
